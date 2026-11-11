@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IV Meter IoT</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.4/dist/mqtt.min.js"></script>
+<style>
+:root{color-scheme:dark;--bg:#08111f;--panel:#111f33;--line:#263a56;--text:#e8f0fb;--muted:#9bb0ca;--blue:#55a8ff;--green:#45d6a1}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px system-ui,Segoe UI,sans-serif}
+header{padding:22px max(18px,calc((100% - 1180px)/2)) 0;background:#0d1a2c;border-bottom:1px solid var(--line)}
+h1{margin:0;font-size:24px}header p{margin:5px 0 0;color:var(--muted)}
+.tabs{display:flex;gap:6px;margin-top:16px}
+.tab{background:#17283f;color:var(--muted);border-radius:9px 9px 0 0;padding:10px 20px}
+.tab.active{background:var(--bg);color:var(--text);box-shadow:inset 0 2px 0 var(--blue)}
+main{max-width:1180px;margin:22px auto;padding:0 16px}
+[hidden]{display:none!important}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:17px}
+.label{color:var(--muted);font-size:13px}.value{font-size:30px;font-weight:700;margin-top:5px}
+.unit{font-size:14px;color:var(--muted);font-weight:400}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:15px 0}
+button,a.btn{border:0;border-radius:9px;padding:11px 15px;background:var(--blue);color:#061426;font-weight:700;cursor:pointer;text-decoration:none;font-size:inherit;font-family:inherit}
+button.secondary,a.secondary{background:#263a56;color:var(--text)}button.danger{background:#8e3543;color:white}
+.status{margin-left:auto;color:var(--muted)}.online{color:var(--green)}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+canvas{width:100%;max-height:340px}.tablewrap{overflow:auto;margin-top:14px}
+table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:9px;border-bottom:1px solid var(--line);text-align:right}td:first-child,th:first-child{text-align:left}
+.note{color:var(--muted);font-size:13px;line-height:1.5}
+/* ---- tab analisis ---- */
+.bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 12px}
+.bar button{padding:9px 12px;font-size:14px}
+.bar label{color:var(--muted);font-size:13px;display:flex;align-items:center;gap:6px}
+select,input[type=number]{background:#0d1a2c;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px}
+input[type=number]{width:96px}
+.ana{display:grid;grid-template-columns:minmax(380px,460px) 1fr;gap:14px;align-items:start}
+.ana table{font-size:12.5px}
+#anaTable th,#anaTable td{text-align:center;padding:7px 5px;white-space:nowrap}
+#anaTable th:nth-child(2),#anaTable td:nth-child(2){text-align:left}
+#anaTable tbody tr{cursor:pointer}#anaTable tbody tr:hover{background:#17283f}
+#anaTable tbody tr.sel{background:#1f4f86}
+#anaTable td:nth-child(2){max-width:150px;overflow:hidden;text-overflow:ellipsis}
+.listwrap{max-height:340px;overflow:auto;margin-top:8px}
+pre#detail{margin:12px 0 0;font:13px/1.55 Consolas,ui-monospace,monospace;color:var(--text);white-space:pre-wrap}
+.sw{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}
+.stack{display:grid;gap:14px}
+@media(max-width:900px){.ana{grid-template-columns:1fr}}
+@media(max-width:720px){.grid{grid-template-columns:1fr}.charts{grid-template-columns:1fr}.status{width:100%;margin-left:0}}
+</style>
+</head>
+<body>
+<header>
+  <h1>IV Meter IoT</h1><p>Monitoring panel surya melalui internet (GitHub Pages + MQTT)</p>
+  <nav class="tabs">
+    <button class="tab active" data-tab="ukur">Pengukuran</button>
+    <button class="tab" data-tab="ana">Analisis</button>
+  </nav>
+</header>
+<main>
+<!-- ================= TAB PENGUKURAN ================= -->
+<div id="tab-ukur">
+  <section class="grid">
+    <div class="card"><div class="label">TEGANGAN</div><div class="value" id="v">— <span class="unit">V</span></div></div>
+    <div class="card"><div class="label">ARUS</div><div class="value" id="i">— <span class="unit">A</span></div></div>
+    <div class="card"><div class="label">DAYA</div><div class="value" id="p">— <span class="unit">W</span></div></div>
+  </section>
+  <div class="row">
+    <button id="capture">Tambah titik kurva</button>
+    <button class="secondary" id="clear">Hapus titik kurva</button>
+    <button class="secondary" id="csv">Unduh CSV</button>
+    <span class="status" id="status">Menghubungkan…</span>
+  </div>
+  <section class="charts">
+    <div class="card"><div class="label">KURVA I–V</div><canvas id="ivChart"></canvas></div>
+    <div class="card"><div class="label">KURVA P–V</div><canvas id="pvChart"></canvas></div>
+  </section>
+  <section class="card tablewrap">
+    <div class="label">TITIK PENGUKURAN TERSIMPAN</div>
+    <table><thead><tr><th>Waktu (UTC)</th><th>V (V)</th><th>I (A)</th><th>P (W)</th></tr></thead><tbody id="rows"></tbody></table>
+  </section>
+  <p class="note">Cara membuat kurva: ubah beban/potensiometer secara bertahap, tunggu nilai stabil, lalu tekan “Tambah titik kurva” pada setiap posisi. Kurva adalah kumpulan titik yang kamu simpan, bukan hasil sweep otomatis. Setelah ≥ 3 titik, buka tab Analisis dan simpan ke daftar.</p>
+</div>
+
+<!-- ================= TAB ANALISIS ================= -->
+<div id="tab-ana" hidden>
+  <div class="bar">
+    <button id="aImpor">Impor CSV…</button>
+    <button id="aSimpan">Simpan titik kurva ke daftar</button>
+    <button class="secondary" id="aNama">Ganti nama</button>
+    <button class="danger" id="aHapus">Hapus terpilih</button>
+    <button class="danger" id="aHapusSemua">Hapus semua</button>
+    <button class="secondary" id="aEkspor">Simpan semua analisis…</button>
+    <button class="secondary" id="aPng">Unduh grafik PNG</button>
+    <input type="file" id="fileCsv" accept=".csv,.txt,text/csv" multiple hidden>
+  </div>
+  <div class="bar">
+    <label>Grafik diurutkan menurut:
+      <select id="urut"></select></label>
+    <label>Iradiansi (W/m²) <input type="number" id="gIn" min="0" step="any" placeholder="mis. 1000"></label>
+    <label>Luas panel (cm²) <input type="number" id="aIn" min="0" step="any" placeholder="mis. 25"></label>
+  </div>
+  <p class="note" style="margin:0 0 12px">Iradiansi dan luas panel dipakai untuk menghitung efisiensi pada analisis yang disimpan/diimpor berikutnya. Nomor titik / urutan baris CSV tidak berpengaruh pada bentuk grafik.</p>
+
+  <div class="ana">
+    <div class="stack">
+      <div class="card">
+        <div class="label">DAFTAR ANALISIS — klik untuk memilih, Ctrl/Shift-klik atau centang untuk membandingkan</div>
+        <div class="listwrap">
+          <table id="anaTable"><thead><tr>
+            <th></th><th>Nama</th><th>Asal</th><th>Titik</th><th>Voc (V)</th><th>Isc (mA)</th><th>Pmax (mW)</th><th>FF (%)</th><th>Eff (%)</th>
+          </tr></thead><tbody id="anaRows"></tbody></table>
+        </div>
+      </div>
+      <div class="card"><div class="label">DETAIL</div><pre id="detail"></pre></div>
+    </div>
+    <div class="stack">
+      <div class="card"><canvas id="aIv"></canvas></div>
+      <div class="card"><canvas id="aPv"></canvas></div>
+    </div>
+  </div>
+</div>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+async function getJSON(url,opts={}){const r=await fetch(url,opts);if(!r.ok)throw new Error(await r.text());return r.json()}
+
+/* ======================================================= TAB PENGUKURAN (tetap) */
+const common={responsive:true,animation:false,plugins:{legend:{labels:{color:'#dce8f7'}}},
+scales:{x:{title:{display:true,text:'Tegangan (V)',color:'#9bb0ca'},ticks:{color:'#9bb0ca'},grid:{color:'#263a56'}},
+y:{ticks:{color:'#9bb0ca'},grid:{color:'#263a56'}}}};
+const iv=new Chart($('ivChart'),{type:'scatter',data:{datasets:[{label:'I–V',data:[],showLine:true,borderColor:'#55a8ff',backgroundColor:'#55a8ff'}]},options:{...common,scales:{...common.scales,y:{...common.scales.y,title:{display:true,text:'Arus (A)',color:'#9bb0ca'}}}}});
+const pv=new Chart($('pvChart'),{type:'scatter',data:{datasets:[{label:'P–V',data:[],showLine:true,borderColor:'#45d6a1',backgroundColor:'#45d6a1'}]},options:{...common,scales:{...common.scales,y:{...common.scales.y,title:{display:true,text:'Daya (W)',color:'#9bb0ca'}}}}});
+/* ---- MQTT: ESP mem-publish, halaman ini subscribe. Topik = awalan yang sama dengan MQTT_TOPIC di secrets.h ---- */
+const MQTT_URL='wss://broker.hivemq.com:8884/mqtt';
+let topik=(new URLSearchParams(location.search).get('t')||localStorage.getItem('ivmeter_topik')||'').trim();
+if(!topik)topik=(prompt('Masukkan topik MQTT (sama dengan MQTT_TOPIC di ESP):')||'').trim();
+if(topik){try{localStorage.setItem('ivmeter_topik',topik)}catch(e){}}
+
+const PTS_KEY='ivmeter_titik_v1';
+let latest=null,lastMsg=0,titikUkur=[];
+try{titikUkur=JSON.parse(localStorage.getItem(PTS_KEY)||'[]')}catch(e){titikUkur=[]}
+const simpanTitik=()=>{try{localStorage.setItem(PTS_KEY,JSON.stringify(titikUkur))}catch(e){}};
+
+let client=null;
+if(topik){
+  client=mqtt.connect(MQTT_URL,{reconnectPeriod:3000,clientId:'ivgui_'+Math.random().toString(16).slice(2,10)});
+  client.on('connect',()=>client.subscribe(topik+'/latest'));
+  client.on('error',e=>console.error(e));
+  client.on('message',(t,buf)=>{
+    try{
+      const m=JSON.parse(buf.toString());
+      if(![m.v,m.i,m.p].every(Number.isFinite))return;
+      latest={voltage:m.v,current:m.i,power:m.p,timestamp:(m.t>1.6e9?new Date(m.t*1000):new Date()).toISOString()};
+      lastMsg=Date.now();
+    }catch(e){console.error(e)}
+  });
+}
+
+function refresh(){
+  const d=latest,hidup=d&&Date.now()-lastMsg<5000;
+  if(d){$('v').innerHTML=d.voltage.toFixed(3)+' <span class="unit">V</span>';$('i').innerHTML=d.current.toFixed(4)+' <span class="unit">A</span>';$('p').innerHTML=d.power.toFixed(4)+' <span class="unit">W</span>'}
+  if(hidup){$('status').textContent='Data masuk: '+new Date(lastMsg).toLocaleTimeString();$('status').className='status online'}
+  else{
+    $('status').className='status';
+    $('status').textContent=!topik?'Topik MQTT belum diisi (buka dengan ?t=topikmu)':d?'ESP tidak mengirim data (terakhir '+new Date(lastMsg).toLocaleTimeString()+')':(client&&client.connected?'Menunggu data ESP':'Menghubungkan ke broker…');
+  }
+  const pts=titikUkur;
+  const sorted=[...pts].sort((a,b)=>a.voltage-b.voltage);
+  iv.data.datasets[0].data=sorted.map(x=>({x:x.voltage,y:x.current}));
+  pv.data.datasets[0].data=sorted.map(x=>({x:x.voltage,y:x.power}));
+  iv.update();pv.update();
+  $('rows').innerHTML=pts.slice().reverse().map(x=>`<tr><td>${new Date(x.timestamp).toLocaleString()}</td><td>${x.voltage.toFixed(3)}</td><td>${x.current.toFixed(4)}</td><td>${x.power.toFixed(4)}</td></tr>`).join('');
+}
+$('capture').onclick=()=>{
+  if(!latest||Date.now()-lastMsg>5000){alert('Belum ada data terbaru dari ESP.');return}
+  titikUkur.push({...latest});simpanTitik();refresh();
+};
+$('clear').onclick=()=>{if(confirm('Hapus semua titik kurva?')){titikUkur=[];simpanTitik();refresh()}};
+$('csv').onclick=()=>{
+  if(!titikUkur.length){alert('Belum ada titik kurva.');return}
+  let s='Waktu,Tegangan_V,Arus_A,Daya_W\n';
+  for(const x of titikUkur)s+=[x.timestamp,x.voltage.toFixed(4),x.current.toFixed(5),x.power.toFixed(6)].join(',')+'\n';
+  unduh('iv_data.csv','\uFEFF'+s);
+};
+refresh();setInterval(refresh,1200);
+
+/* ======================================================= TAB ANALISIS */
+const LS_KEY='ivmeter_analisis_v1';
+const URUT={I:'Arus I (tinggi → rendah)',V:'Tegangan V (rendah → tinggi)'};
+const WARNA=['#55a8ff','#ff6b6b','#45d6a1','#ffb454','#b48cff','#4fd8e8','#ff8fc8','#c5d86d','#c58b5b','#a0a8b5'];
+const S={urut:'I',riwayat:[]};   // riwayat: {nama,sumber,waktu,g,a,titik:[{v,i,p,w}]}
+let sel=new Set(), anchor=null;
+
+function muat(){try{const d=JSON.parse(localStorage.getItem(LS_KEY)||'null');
+  if(d){S.riwayat=(d.analisis||[]).filter(r=>r&&r.nama&&Array.isArray(r.titik)&&r.titik.length);if(URUT[d.urut])S.urut=d.urut}}catch(e){S.riwayat=[]}}
+function simpan(){try{localStorage.setItem(LS_KEY,JSON.stringify({urut:S.urut,analisis:S.riwayat}))}catch(e){alert('Gagal menyimpan daftar di browser: '+e.message)}}
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const nowStr=()=>new Date().toISOString().slice(0,19).replace('T',' ');
+
+/* urut titik menurut I (tinggi→rendah) atau V (rendah→tinggi) */
+const kunci=(a,b)=>S.urut==='I'?((b.i-a.i)||(a.v-b.v)):((a.v-b.v)||(b.i-a.i));
+const urutkan=t=>[...t].sort(kunci);
+
+function hitung(titik,g,a){
+  const pts=urutkan(titik); if(pts.length<3)return null;
+  const h={};
+  const daya=pts.map(x=>x.v*x.i);
+  let k=0;daya.forEach((d,n)=>{if(d>daya[k])k=n});
+  h.Vmp=pts[k].v;h.Imp=pts[k].i;h.Pmax=daya[k];h.Rmp=h.Imp>0?h.Vmp/h.Imp:null;
+  // Isc: dua titik pertama
+  const p1=pts[0],p2=pts[1],imax=Math.max(...pts.map(x=>x.i));
+  const sl=p2.v!==p1.v?(p2.i-p1.i)/(p2.v-p1.v):null;
+  if(sl!==null&&sl<0){h.Isc=Math.max(p1.i-sl*p1.v,imax);h.Rsh=-1/sl}else{h.Isc=imax;h.Rsh=null}
+  h.IscEst=p1.v>0.05;
+  // Voc: dua titik terakhir
+  const p3=pts[pts.length-2],p4=pts[pts.length-1],vmax=Math.max(...pts.map(x=>x.v));
+  const sh=p4.v!==p3.v?(p4.i-p3.i)/(p4.v-p3.v):null;
+  if(p4.i<=0.001){h.Voc=p4.v;h.VocEst=false}
+  else if(sh!==null&&sh<0){h.Voc=Math.max(p4.v-p4.i/sh,vmax);h.VocEst=true}
+  else{h.Voc=null;h.VocEst=true}
+  h.Rs=(sh!==null&&sh<0)?-1/sh:null;
+  h.FF=(h.Voc&&h.Isc&&h.Voc*h.Isc>0)?h.Pmax/(h.Voc*h.Isc):null;
+  h.Eff=(g>0&&a>0)?h.Pmax/(g*a/10000)*100:null;
+  return h;
+}
+const fmt=(x,u,d=3,s=1)=>x==null?'-':(x*s).toFixed(d)+' '+u;
+const cell=(x,d,s=1)=>x==null?'-':(x*s).toFixed(d);
+
+function barisAnalisis(h,n){
+  if(!h)return[`Titik terukur : ${n}`,'Butuh minimal 3 titik untuk analisis.'];
+  return[
+   `Titik terukur : ${n}`,
+   `Voc           : ${fmt(h.Voc,'V',3)}${h.VocEst?' (est.)':''}`,
+   `Isc           : ${fmt(h.Isc,'mA',1,1000)}${h.IscEst?' (est.)':''}`,
+   `Pmax          : ${fmt(h.Pmax,'W',4)}`,
+   `Vmp           : ${fmt(h.Vmp,'V',3)}`,
+   `Imp           : ${fmt(h.Imp,'mA',1,1000)}`,
+   `R optimum     : ${fmt(h.Rmp,'Ω',2)}`,
+   `Fill Factor   : ${h.FF==null?'-':(h.FF*100).toFixed(1)+' %'}`,
+   `Rs (perkiraan): ${fmt(h.Rs,'Ω',2)}`,
+   `Rsh(perkiraan): ${fmt(h.Rsh,'Ω',1)}`,
+   `Efisiensi     : ${h.Eff==null?'-':h.Eff.toFixed(2)+' %'}`];
+}
+
+/* ---------- CSV impor (kolom Tegangan_V + Arus_A/Arus_mA; Daya, Waktu opsional) ---------- */
+function parseCSV(text){
+  text=text.replace(/^\uFEFF/,'');
+  const lines=text.split(/\r?\n/).filter(l=>l.trim());
+  if(!lines.length)throw new Error('File kosong.');
+  const cnt=(s,c)=>s.split(c).length-1;
+  const delim=[',',';','\t'].map(c=>[c,cnt(lines[0],c)]).sort((a,b)=>b[1]-a[1])[0][0];
+  const rows=lines.map(l=>l.split(delim).map(c=>c.trim().replace(/^"|"$/g,'')));
+  const head=rows[0].map(h=>h.toLowerCase().replace(/\s+/g,''));
+  const cari=names=>{const k=head.findIndex(h=>names.includes(h));return k<0?null:k};
+  const kv=cari(['tegangan_v','tegangan','v','volt','voltage','v(v)']);
+  const ki=cari(['arus_a','arus_ma','arus','i','i_a','i_ma','current','i(a)','i(ma)']);
+  const kp=cari(['daya_w','daya_mw','daya','p','p_w','p_mw','power','p(w)','p(mw)']);
+  const kw=cari(['waktu','time','timestamp']);
+  if(kv==null||ki==null)throw new Error('Kolom tegangan dan arus tidak ditemukan. Header yang dikenali: Tegangan_V dan Arus_A (atau Arus_mA).');
+  const si=head[ki].includes('ma')?0.001:1, sp=(kp!=null&&head[kp].includes('mw'))?0.001:1;
+  const num=t=>parseFloat(String(t).trim().replace(',','.'));
+  const out=[];
+  for(const r of rows.slice(1)){
+    const v=num(r[kv]),i=num(r[ki])*si;
+    if(!isFinite(v)||!isFinite(i))continue;
+    let p=kp!=null?num(r[kp])*sp:v*i; if(!isFinite(p))p=v*i;
+    out.push({v,i,p,w:(kw!=null&&r[kw])?r[kw]:'impor'});
+  }
+  if(!out.length)throw new Error('Tidak ada baris data yang valid.');
+  return out;
+}
+
+/* ---------- grafik ---------- */
+const axisBase=(t)=>({min:0,title:{display:true,text:t,color:'#9bb0ca'},ticks:{color:'#9bb0ca'},grid:{color:'#263a56'}});
+function mkChart(id){
+  return new Chart($(id),{type:'scatter',data:{datasets:[]},options:{responsive:true,aspectRatio:1.7,animation:false,
+    plugins:{title:{display:true,text:'',color:'#55a8ff',font:{size:14}},
+      legend:{labels:{color:'#dce8f7',filter:i=>!i.text.startsWith('_')}}},
+    scales:{x:axisBase('Tegangan (V)'),y:axisBase('')}}});
+}
+const aIv=mkChart('aIv'), aPv=mkChart('aPv');
+const garis=(label,data,o={})=>({label,data,showLine:true,pointRadius:0,borderWidth:1.5,...o});
+
+function gambarSatu(rek){
+  const t=urutkan(rek.titik),h=hitung(rek.titik,rek.g,rek.a);
+  const vs=t.map(x=>x.v),im=t.map(x=>x.i*1000);
+  const ds=[];
+  if(h)ds.push(garis('_area',[{x:0,y:h.Imp*1000},{x:h.Vmp,y:h.Imp*1000},{x:h.Vmp,y:0}],{fill:'origin',backgroundColor:'rgba(69,214,161,.15)',borderWidth:0}));
+  ds.push(garis('Terukur',t.map(x=>({x:x.v,y:x.i*1000})),{borderColor:'#55a8ff',backgroundColor:'#55a8ff',pointRadius:4,borderWidth:2}));
+  if(h){
+    if(h.Isc!=null&&vs[0]>0)ds.push(garis('_e1',[{x:0,y:h.Isc*1000},{x:vs[0],y:im[0]}],{borderColor:'#8a97ab',borderDash:[5,5]}));
+    if(h.Voc!=null&&h.VocEst)ds.push(garis('_e2',[{x:vs[vs.length-1],y:im[im.length-1]},{x:h.Voc,y:0}],{borderColor:'#8a97ab',borderDash:[5,5]}));
+    ds.push({label:`MPP (${h.Pmax.toFixed(3)} W)`,data:[{x:h.Vmp,y:h.Imp*1000}],pointStyle:'star',pointRadius:12,backgroundColor:'#45d6a1',borderColor:'#45d6a1'});
+    if(h.Voc!=null)ds.push({label:`Voc ${h.Voc.toFixed(2)} V`,data:[{x:h.Voc,y:0}],pointStyle:'triangle',rotation:180,pointRadius:8,backgroundColor:'#b48cff',borderColor:'#b48cff'});
+    ds.push({label:`Isc ${(h.Isc*1000).toFixed(0)} mA`,data:[{x:0,y:h.Isc*1000}],pointStyle:'triangle',rotation:-90,pointRadius:8,backgroundColor:'#ffb454',borderColor:'#ffb454'});
+  }
+  aIv.data.datasets=ds;aIv.options.plugins.title.text='Kurva I-V';aIv.options.scales.y.title.text='Arus (mA)';
+
+  const dp=[];
+  dp.push(garis('Terukur',t.map(x=>({x:x.v,y:x.p*1000})),{borderColor:'#ff6b6b',backgroundColor:'#ff6b6b',pointRadius:4,pointStyle:'rect',borderWidth:2}));
+  if(h){
+    dp.push(garis('_v',[{x:h.Vmp,y:0},{x:h.Vmp,y:h.Pmax*1000}],{borderColor:'#45d6a1',borderDash:[5,5]}));
+    dp.push({label:`Pmax ${h.Pmax.toFixed(4)} W @ ${h.Vmp.toFixed(2)} V`,data:[{x:h.Vmp,y:h.Pmax*1000}],pointStyle:'star',pointRadius:12,backgroundColor:'#45d6a1',borderColor:'#45d6a1'});
+  }
+  aPv.data.datasets=dp;aPv.options.plugins.title.text='Kurva P-V';aPv.options.scales.y.title.text='Daya (mW)';
+}
+function gambarBanding(idx){
+  const d1=[],d2=[];
+  idx.forEach((n,k)=>{
+    const rek=S.riwayat[n],t=urutkan(rek.titik),h=hitung(rek.titik,rek.g,rek.a),w=WARNA[k%WARNA.length];
+    d1.push(garis(rek.nama,t.map(x=>({x:x.v,y:x.i*1000})),{borderColor:w,backgroundColor:w,pointRadius:3,borderWidth:2}));
+    d2.push(garis(rek.nama,t.map(x=>({x:x.v,y:x.p*1000})),{borderColor:w,backgroundColor:w,pointRadius:3,pointStyle:'rect',borderWidth:2}));
+    if(h){
+      d1.push({label:'_m',data:[{x:h.Vmp,y:h.Imp*1000}],pointStyle:'star',pointRadius:12,backgroundColor:w,borderColor:w});
+      d2.push({label:'_m',data:[{x:h.Vmp,y:h.Pmax*1000}],pointStyle:'star',pointRadius:12,backgroundColor:w,borderColor:w});
+    }
+  });
+  aIv.data.datasets=d1;aIv.options.plugins.title.text='Perbandingan Kurva I-V';aIv.options.scales.y.title.text='Arus (mA)';
+  aPv.data.datasets=d2;aPv.options.plugins.title.text='Perbandingan Kurva P-V';aPv.options.scales.y.title.text='Daya (mW)';
+}
+
+/* ---------- render tab analisis ---------- */
+function render(){
+  sel=new Set([...sel].filter(n=>n<S.riwayat.length));
+  $('anaRows').innerHTML=S.riwayat.map((rek,n)=>{
+    const h=hitung(rek.titik,rek.g,rek.a), w=WARNA[[...sel].sort((a,b)=>a-b).indexOf(n)%WARNA.length];
+    return `<tr data-n="${n}" class="${sel.has(n)?'sel':''}"><td><input type="checkbox" ${sel.has(n)?'checked':''}></td>
+      <td title="${esc(rek.nama)}">${esc(rek.nama)}</td><td>${rek.sumber}</td><td>${rek.titik.length}</td>
+      <td>${cell(h&&h.Voc,2)}</td><td>${cell(h&&h.Isc,1,1000)}</td><td>${cell(h&&h.Pmax,2,1000)}</td>
+      <td>${cell(h&&h.FF,1,100)}</td><td>${cell(h&&h.Eff,2)}</td></tr>`}).join('')
+    ||'<tr><td colspan="9" style="text-align:center;color:var(--muted)">Belum ada analisis</td></tr>';
+  const idx=sel.size?[...sel].sort((a,b)=>a-b):S.riwayat.map((_,n)=>n);
+  if(sel.size===1){
+    const rek=S.riwayat[idx[0]],h=hitung(rek.titik,rek.g,rek.a);
+    gambarSatu(rek);
+    const b=[rek.nama,`(${rek.sumber}, ${rek.waktu})`,...barisAnalisis(h,rek.titik.length)];
+    if(rek.g)b.push(`Iradiansi     : ${rek.g} W/m²`);
+    if(rek.a)b.push(`Luas panel    : ${rek.a} cm²`);
+    $('detail').textContent=b.join('\n');
+  }else{
+    gambarBanding(idx);
+    $('detail').textContent=S.riwayat.length
+      ?`${idx.length} analisis ditampilkan.\nKlik satu baris untuk melihat detailnya.`
+      :"Belum ada analisis.\nImpor CSV, atau buat titik kurva di tab\nPengukuran lalu klik 'Simpan titik kurva ke daftar'.";
+  }
+  aIv.update();aPv.update();
+}
+
+$('urut').innerHTML=Object.entries(URUT).map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
+$('urut').onchange=()=>{S.urut=$('urut').value;simpan();render()};
+
+$('anaRows').addEventListener('click',e=>{
+  const tr=e.target.closest('tr[data-n]');if(!tr)return;
+  const n=+tr.dataset.n, cb=e.target.tagName==='INPUT';
+  if(e.shiftKey&&anchor!=null){const [a,b]=[Math.min(anchor,n),Math.max(anchor,n)];sel=new Set();for(let k=a;k<=b;k++)sel.add(k)}
+  else if(cb||e.ctrlKey||e.metaKey){sel.has(n)?sel.delete(n):sel.add(n);anchor=n}
+  else{if(sel.size===1&&sel.has(n))sel=new Set();else sel=new Set([n]);anchor=n}
+  render();
+});
+
+function tambah(nama,sumber,titik){
+  S.riwayat.push({nama,sumber,waktu:nowStr(),g:parseFloat($('gIn').value)||null,a:parseFloat($('aIn').value)||null,titik});
+  simpan();return S.riwayat.length-1;
+}
+$('aSimpan').onclick=async()=>{
+  try{
+    const pts=titikUkur;
+    if(!pts.length){alert('Belum ada titik kurva. Tambah titik di tab Pengukuran dulu.');return}
+    const nama=prompt('Nama analisis:','Ukur '+nowStr().slice(0,16));
+    if(!nama||!nama.trim())return;
+    const n=tambah(nama.trim(),'ukur',pts.map(x=>({v:x.voltage,i:x.current,p:x.power,w:x.timestamp})));
+    sel=new Set([n]);render();
+  }catch(e){alert('Gagal mengambil titik: '+e.message)}
+};
+$('aImpor').onclick=()=>$('fileCsv').click();
+$('fileCsv').onchange=async e=>{
+  const baru=[],gagal=[];
+  for(const f of e.target.files){
+    try{const titik=parseCSV(await f.text());baru.push(tambah(f.name.replace(/\.[^.]+$/,''),'impor',titik))}
+    catch(err){gagal.push(f.name+': '+err.message)}
+  }
+  e.target.value='';
+  if(baru.length){sel=new Set(baru);render()}
+  alert(baru.length+' file berhasil diimpor.'+(gagal.length?'\n\nGagal:\n'+gagal.join('\n'):''));
+};
+$('aNama').onclick=()=>{
+  if(sel.size!==1){alert('Pilih satu analisis dulu.');return}
+  const n=[...sel][0],nama=prompt('Nama baru:',S.riwayat[n].nama);
+  if(nama&&nama.trim()){S.riwayat[n].nama=nama.trim();simpan();render()}
+};
+$('aHapus').onclick=()=>{
+  if(!sel.size){alert('Pilih analisis yang mau dihapus.');return}
+  if(!confirm(`Hapus ${sel.size} analisis terpilih?`))return;
+  S.riwayat=S.riwayat.filter((_,n)=>!sel.has(n));sel=new Set();simpan();render();
+};
+$('aHapusSemua').onclick=()=>{
+  if(S.riwayat.length&&confirm('Hapus SEMUA analisis tersimpan?')){S.riwayat=[];sel=new Set();simpan();render()}
+};
+
+/* ---------- ekspor ---------- */
+function unduh(nama,isi,tipe='text/csv;charset=utf-8'){
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([isi],{type:tipe}));
+  a.download=nama;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+}
+const q=s=>'"'+String(s).replace(/"/g,'""')+'"';
+const f=(x,d)=>x==null?'':x.toFixed(d);
+$('aEkspor').onclick=()=>{
+  if(!S.riwayat.length){alert('Daftar analisis masih kosong.');return}
+  const rg=['Nama','Sumber','Waktu','Jumlah_titik','Voc_V','Isc_A','Pmax_W','Vmp_V','Imp_A','R_optimum_ohm','FF','Rs_ohm','Rsh_ohm','Efisiensi_persen','Iradiansi_Wm2','Luas_cm2'];
+  let a=rg.join(',')+'\n';
+  for(const r of S.riwayat){
+    const h=hitung(r.titik,r.g,r.a);
+    a+=[q(r.nama),r.sumber,r.waktu,r.titik.length,
+      ...(h?[f(h.Voc,3),f(h.Isc,4),f(h.Pmax,4),f(h.Vmp,3),f(h.Imp,4),f(h.Rmp,3),f(h.FF,4),f(h.Rs,3),f(h.Rsh,3),f(h.Eff,2)]:Array(10).fill('')),
+      f(r.g,1),f(r.a,2)].join(',')+'\n';
+  }
+  let b='Analisis,Urutan_grafik,Titik_asal,Tegangan_V,Arus_A,Daya_W,Resistansi_ohm,Waktu\n';
+  for(const r of S.riwayat){
+    r.titik.map((t,k)=>({t,k:k+1})).sort((x,y)=>kunci(x.t,y.t)).forEach((o,k)=>{
+      b+=[q(r.nama),k+1,o.k,o.t.v.toFixed(3),o.t.i.toFixed(4),o.t.p.toFixed(4),o.t.i>0.0005?(o.t.v/o.t.i).toFixed(2):'',q(o.t.w||'')].join(',')+'\n';
+    });
+  }
+  unduh('iv_semua_analisis.csv','\uFEFF'+a);
+  setTimeout(()=>unduh('iv_semua_analisis_titik.csv','\uFEFF'+b),400);
+};
+$('aPng').onclick=()=>{
+  const c1=aIv.canvas,c2=aPv.canvas,w=Math.max(c1.width,c2.width),c=document.createElement('canvas');
+  c.width=w;c.height=c1.height+c2.height;const x=c.getContext('2d');
+  x.fillStyle='#111f33';x.fillRect(0,0,c.width,c.height);x.drawImage(c1,0,0);x.drawImage(c2,0,c1.height);
+  const a=document.createElement('a');a.href=c.toDataURL('image/png');a.download='iv_grafik_analisis.png';a.click();
+};
+
+/* ---------- tab ---------- */
+function tampilTab(nama){
+  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===nama));
+  $('tab-ukur').hidden=nama!=='ukur';$('tab-ana').hidden=nama!=='ana';
+  if(nama==='ana'){render();aIv.resize();aPv.resize()}else{iv.resize();pv.resize()}
+  history.replaceState(null,'',nama==='ana'?'#analisis':location.pathname+location.search);
+}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>tampilTab(b.dataset.tab));
+
+muat();$('urut').value=S.urut;
+tampilTab(location.hash==='#analisis'?'ana':'ukur');
+</script>
+</body></html>
