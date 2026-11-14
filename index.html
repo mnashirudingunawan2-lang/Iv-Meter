@@ -24,6 +24,11 @@ main{max-width:1180px;margin:22px auto;padding:0 16px}
 button,a.btn{border:0;border-radius:9px;padding:11px 15px;background:var(--blue);color:#061426;font-weight:700;cursor:pointer;text-decoration:none;font-size:inherit;font-family:inherit}
 button.secondary,a.secondary{background:#263a56;color:var(--text)}button.danger{background:#8e3543;color:white}
 .status{margin-left:auto;color:var(--muted)}.online{color:var(--green)}
+.conn{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:6px 13px;border-radius:999px;background:#17283f;border:1px solid var(--line);font-size:13px;color:var(--muted)}
+.dot{width:10px;height:10px;border-radius:50%;background:#d6475b;flex:none}
+.pill.on{color:var(--text);border-color:#2a6b57}.pill.on .dot{background:var(--green);box-shadow:0 0 8px var(--green)}
+.pill.wait .dot{background:#e0b341}
 .charts{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
 canvas{width:100%;max-height:340px}.tablewrap{overflow:auto;margin-top:14px}
 table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:9px;border-bottom:1px solid var(--line);text-align:right}td:first-child,th:first-child{text-align:left}
@@ -52,6 +57,10 @@ pre#detail{margin:12px 0 0;font:13px/1.55 Consolas,ui-monospace,monospace;color:
 <body>
 <header>
   <h1>IV Meter IoT</h1><p>Monitoring panel surya melalui internet (GitHub Pages + MQTT)</p>
+  <div class="conn">
+    <span class="pill wait" id="bBroker"><i class="dot"></i><span>Broker MQTT: menghubungkan…</span></span>
+    <span class="pill off" id="bEsp"><i class="dot"></i><span>ESP: belum ada data</span></span>
+  </div>
   <nav class="tabs">
     <button class="tab active" data-tab="ukur">Pengukuran</button>
     <button class="tab" data-tab="ana">Analisis</button>
@@ -148,12 +157,12 @@ if(topik){
   client=mqtt.connect(MQTT_URL,{reconnectPeriod:3000,clientId:'ivgui_'+Math.random().toString(16).slice(2,10)});
   client.on('connect',()=>client.subscribe(topik+'/latest'));
   client.on('error',e=>console.error(e));
-  client.on('message',(t,buf)=>{
+  client.on('message',(t,buf,pkt)=>{
     try{
       const m=JSON.parse(buf.toString());
       if(![m.v,m.i,m.p].every(Number.isFinite))return;
       latest={voltage:m.v,current:m.i,power:m.p,timestamp:(m.t>1.6e9?new Date(m.t*1000):new Date()).toISOString()};
-      lastMsg=Date.now();
+      lastMsg=(pkt&&pkt.retain)?0:Date.now();   // pesan retained = data lama, bukan tanda ESP hidup
     }catch(e){console.error(e)}
   });
 }
@@ -161,10 +170,19 @@ if(topik){
 function refresh(){
   const d=latest,hidup=d&&Date.now()-lastMsg<5000;
   if(d){$('v').innerHTML=d.voltage.toFixed(3)+' <span class="unit">V</span>';$('i').innerHTML=d.current.toFixed(4)+' <span class="unit">A</span>';$('p').innerHTML=d.power.toFixed(4)+' <span class="unit">W</span>'}
+  const terakhir=d?new Date(d.timestamp).toLocaleTimeString():'';
+  const setPill=(id,cls,txt)=>{const e=$(id);e.className='pill '+cls;e.lastElementChild.textContent=txt};
+  if(!topik)setPill('bBroker','off','Broker MQTT: topik belum diisi');
+  else if(client&&client.connected)setPill('bBroker','on','Broker MQTT: terhubung');
+  else if(client&&client.reconnecting)setPill('bBroker','wait','Broker MQTT: menghubungkan…');
+  else setPill('bBroker','off','Broker MQTT: terputus');
+  if(hidup)setPill('bEsp','on','ESP: online · data '+new Date(lastMsg).toLocaleTimeString());
+  else setPill('bEsp','off',d?'ESP: offline · terakhir '+terakhir:'ESP: belum ada data');
+  document.title=(hidup?'🟢 ':'🔴 ')+'IV Meter IoT';
   if(hidup){$('status').textContent='Data masuk: '+new Date(lastMsg).toLocaleTimeString();$('status').className='status online'}
   else{
     $('status').className='status';
-    $('status').textContent=!topik?'Topik MQTT belum diisi (buka dengan ?t=topikmu)':d?'ESP tidak mengirim data (terakhir '+new Date(lastMsg).toLocaleTimeString()+')':(client&&client.connected?'Menunggu data ESP':'Menghubungkan ke broker…');
+    $('status').textContent=!topik?'Topik MQTT belum diisi (buka dengan ?t=topikmu)':d?'ESP tidak mengirim data (terakhir '+terakhir+')':(client&&client.connected?'Menunggu data ESP':'Menghubungkan ke broker…');
   }
   const pts=titikUkur;
   const sorted=[...pts].sort((a,b)=>a.voltage-b.voltage);
